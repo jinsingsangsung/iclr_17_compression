@@ -10,20 +10,20 @@ import pdb
 
 
 class Datasets(Dataset):
-    def __init__(self, data_dir, image_size=256):
+    def __init__(self, data_dir, image_size=256, num_images=10000):
         self.data_dir = data_dir
         self.image_size = image_size
 
         if not os.path.exists(data_dir):
             raise Exception(f"[!] {self.data_dir} not exitd")
 
-        self.image_path = sorted(glob(os.path.join(self.data_dir, "*.*")))
+        self.image_path = sorted(glob(os.path.join(self.data_dir, "*.*")))[:num_images]
 
     def __getitem__(self, item):
         image_ori = self.image_path[item]
         image = Image.open(image_ori).convert('RGB')
         transform = transforms.Compose([
-            # transforms.RandomResizedCrop(self.image_size),
+            transforms.RandomResizedCrop(self.image_size),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
@@ -67,10 +67,14 @@ class TestKodakDataset(Dataset):
     def __getitem__(self, item):
         image_ori = self.image_path[item]
         image = Image.open(image_ori).convert('RGB')
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-        ])
-        return transform(image)
+        # pad image to have its height and width to be divisible by 16 if they are not
+        w, h = image.size
+        transformations = [transforms.ToTensor()]
+        if h % 16 != 0 or w % 16 != 0:
+            transformations.append(transforms.Pad((0, 0, 16 - w % 16, 16 - h % 16)))
+        transform = transforms.Compose(transformations)            
+        return transform(image), (16 - w % 16 if w % 16 != 0 else 0, 16 - h % 16 if h % 16 != 0 else 0)
+        
 
     def __len__(self):
         return len(self.image_path)

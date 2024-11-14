@@ -12,21 +12,22 @@ from Meter import AverageMeter
 torch.backends.cudnn.enabled = True
 # gpu_num = 4
 gpu_num = torch.cuda.device_count()
-cur_lr = base_lr = 1e-4#  * gpu_num
+cur_lr = base_lr = 1 * gpu_num
 train_lambda = 8192
 print_freq = 100
 cal_step = 40
 warmup_step = 0#  // gpu_num
 batch_size = 4
-tot_epoch = 1000000
-tot_step = 2500000
-decay_interval = 2200000
+tot_epoch = 1000
+tot_step = 250
+decay_interval = 220
 lr_decay = 0.1
 image_size = 256
+num_images = 6507 # from Balle, 2016
 logger = logging.getLogger("ImageCompression")
 tb_logger = None
 global_step = 0
-save_model_freq = 50000
+save_model_freq = 50
 parser = argparse.ArgumentParser(description='Pytorch reimplement for variational image compression with a scale hyperprior')
 
 parser.add_argument('-n', '--name', default='',
@@ -37,6 +38,7 @@ parser.add_argument('--test', action='store_true')
 parser.add_argument('--config', dest='config', required=False,
         help = 'hyperparameter in json format')
 parser.add_argument('--seed', default=234, type=int, help='seed for random functions, and network initialization')
+parser.add_argument('--use_ssm', action='store_true', help='use SSM')
 
 def parse_config(config):
     config = json.load(open(args.config))
@@ -101,6 +103,9 @@ def train(epoch, global_step):
         distortion = mse_loss
         rd_loss = train_lambda * distortion + distribution_loss
         optimizer.zero_grad()
+        rd_loss = rd_loss.mean()
+        mse_loss = mse_loss.mean()
+        bpp = bpp.mean()
         rd_loss.backward()
         def clip_gradient(optimizer, grad_clip):
             for group in optimizer.param_groups:
@@ -155,44 +160,51 @@ def train(epoch, global_step):
 
 def testKodak(step):
     with torch.no_grad():
-        test_dataset = TestKodakDataset(data_dir='/data1/liujiaheng/data/compression/kodak')
-        test_loader = DataLoader(dataset=test_dataset, shuffle=False, batch_size=1, pin_memory=True, num_workers=1)
+        kodak_dataset = TestKodakDataset(data_dir='/mnt/tmp/kodak')
+        clic_dataset = TestKodakDataset(data_dir='/mnt/tmp/clic')
+        kodak_loader = DataLoader(dataset=kodak_dataset, shuffle=False, batch_size=1, pin_memory=True, num_workers=1)
+        clic_loader = DataLoader(dataset=clic_dataset, shuffle=False, batch_size=1, pin_memory=True, num_workers=1)
         net.eval()
         sumBpp = 0
         sumPsnr = 0
         sumMsssim = 0
         sumMsssimDB = 0
         cnt = 0
-        for batch_idx, input in enumerate(test_loader):
-            input = input.cuda()
-            clipped_recon_image, mse_loss, bpp = net(input)
-            mse_loss = torch.mean((clipped_recon_image - input).pow(2))
-            mse_loss, bpp = \
-                torch.mean(mse_loss), torch.mean(bpp)
-            psnr = 10 * (torch.log(1. / mse_loss) / np.log(10))
-            sumBpp += bpp
-            sumPsnr += psnr
-            msssim = ms_ssim(clipped_recon_image.cpu().detach(), input.cpu(), data_range=1.0, size_average=True)
-            msssimDB = -10 * (torch.log(1-msssim) / np.log(10))
-            sumMsssimDB += msssimDB
-            sumMsssim += msssim
-            logger.info("Bpp:{:.6f}, PSNR:{:.6f}, MS-SSIM:{:.6f}, MS-SSIM-DB:{:.6f}".format(bpp, psnr, msssim, msssimDB))
-            cnt += 1
+        test_names = ["kodak", "clic"]
+        for test_name, test_loader in zip(test_names, [kodak_loader, clic_loader]):
+            print(f"evaluating on {test_name}.........")
+            for batch_idx, input in enumerate(test_loader):
+                image, pad = input
+                image = image.cuda()
+                w_pad, h_pad = pad
+                clipped_recon_image, mse_loss, bpp = net(image, w_pad, h_pad)
+                mse_loss, bpp = \
+                    torch.mean(mse_loss), torch.mean(bpp)
+                psnr = 10 * (torch.log(1. / mse_loss) / np.log(10))
+                sumBpp += bpp
+                sumPsnr += psnr
+                clipped_image = image[:, :, w_pad//2:w_pad//2+image.size(2), h_pad//2:h_pad//2+image.size(3)]
+                msssim = ms_ssim(clipped_recon_image.cpu().detach(), clipped_image.cpu(), data_range=1.0, size_average=True)
+                msssimDB = -10 * (torch.log(1-msssim) / np.log(10))
+                sumMsssimDB += msssimDB
+                sumMsssim += msssim
+                logger.info("Bpp:{:.6f}, PSNR:{:.6f}, MS-SSIM:{:.6f}, MS-SSIM-DB:{:.6f}".format(bpp, psnr, msssim, msssimDB))
+                cnt += 1
 
-        logger.info("Test on Kodak dataset: model-{}".format(step))
-        sumBpp /= cnt
-        sumPsnr /= cnt
-        sumMsssim /= cnt
-        sumMsssimDB /= cnt
-        logger.info("Dataset Average result---Bpp:{:.6f}, PSNR:{:.6f}, MS-SSIM:{:.6f}, MS-SSIM-DB:{:.6f}".format(sumBpp, sumPsnr, sumMsssim, sumMsssimDB))
-        if tb_logger !=None:
-            logger.info("Add tensorboard---Step:{}".format(step))
-            tb_logger.add_scalar("BPP_Test", sumBpp, step)
-            tb_logger.add_scalar("PSNR_Test", sumPsnr, step)
-            tb_logger.add_scalar("MS-SSIM_Test", sumMsssim, step)
-            tb_logger.add_scalar("MS-SSIM_DB_Test", sumMsssimDB, step)
-        else:
-            logger.info("No need to add tensorboard")
+            logger.info(f"Test on {test_name} dataset: model-{step}")
+            sumBpp /= cnt
+            sumPsnr /= cnt
+            sumMsssim /= cnt
+            sumMsssimDB /= cnt
+            logger.info(f"{test_name} Dataset Average result---Bpp:{sumBpp:.6f}, PSNR:{sumPsnr:.6f}, MS-SSIM:{sumMsssim:.6f}, MS-SSIM-DB:{sumMsssimDB:.6f}")
+            if tb_logger !=None:
+                logger.info(f"Add tensorboard---Step:{step}")
+                tb_logger.add_scalar(f"{test_name}_BPP_Test", sumBpp, step)
+                tb_logger.add_scalar(f"{test_name}_PSNR_Test", sumPsnr, step)
+                tb_logger.add_scalar(f"{test_name}_MS-SSIM_Test", sumMsssim, step)
+                tb_logger.add_scalar(f"{test_name}_MS-SSIM_DB_Test", sumMsssimDB, step)
+            else:
+                logger.info("No need to add tensorboard")
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -217,7 +229,7 @@ if __name__ == "__main__":
     logger.info(open(args.config).read())
     parse_config(args.config)
 
-    model = ImageCompressor()
+    model = ImageCompressor(use_ssm=args.use_ssm)
     if args.pretrain != '':
         logger.info("loading model:{}".format(args.pretrain))
         global_step = load_model(model, args.pretrain)
@@ -231,14 +243,14 @@ if __name__ == "__main__":
     # save_model(model, 0)
     global train_loader
     tb_logger = SummaryWriter(os.path.join(save_path, 'events'))
-    train_data_dir = '/data1/liujiaheng/data/compression/Flick_patch'
-    train_dataset = Datasets(train_data_dir, image_size)
+    train_data_dir = '/mnt/tmp/ImageNet/test'
+    train_dataset = Datasets(train_data_dir, image_size, num_images)
     train_loader = DataLoader(dataset=train_dataset,
                               batch_size=batch_size,
                               shuffle=True,
                               pin_memory=True,
                               num_workers=2)
-    steps_epoch = global_step // (len(train_dataset) // (batch_size))# * gpu_num))
+    steps_epoch = global_step // (len(train_dataset) // (batch_size * gpu_num))
     save_model(model, global_step, save_path)
     for epoch in range(steps_epoch, tot_epoch):
         adjust_learning_rate(optimizer, global_step)

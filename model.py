@@ -36,14 +36,15 @@ def load_model(model, f):
 
 
 class ImageCompressor(nn.Module):
-    def __init__(self, out_channel_N=128):
+    def __init__(self, out_channel_N=128, use_ssm=False):
         super(ImageCompressor, self).__init__()
         self.Encoder = Analysis_net_17(out_channel_N=out_channel_N)
         self.Decoder = Synthesis_net_17(out_channel_N=out_channel_N)
         self.bitEstimator = BitEstimator(channel=out_channel_N)
         self.out_channel_N = out_channel_N
 
-    def forward(self, input_image):
+    def forward(self, input_image, w_pad=0, h_pad=0):
+        w, h = input_image.shape[-2:]
         quant_noise_feature = torch.zeros(input_image.size(0), self.out_channel_N, input_image.size(2) // 16, input_image.size(3) // 16).cuda()
         quant_noise_feature = torch.nn.init.uniform_(torch.zeros_like(quant_noise_feature), -0.5, 0.5)
         feature = self.Encoder(input_image)
@@ -56,8 +57,10 @@ class ImageCompressor(nn.Module):
         recon_image = self.Decoder(compressed_feature_renorm)
         # recon_image = prediction + recon_res
         clipped_recon_image = recon_image.clamp(0., 1.)
+        clipped_recon_image = clipped_recon_image[:, :, w_pad//2:w_pad//2+w, h_pad//2:h_pad//2+h]
+        clipped_input_image = input_image[:, :, w_pad//2:w_pad//2+w, h_pad//2:h_pad//2+h]
         # distortion
-        mse_loss = torch.mean((recon_image - input_image).pow(2))
+        mse_loss = torch.mean((clipped_recon_image - clipped_input_image).pow(2))
 
         # def feature_probs_based_sigma(feature, sigma):
         #     mu = torch.zeros_like(sigma)
