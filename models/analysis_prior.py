@@ -24,8 +24,14 @@ class Analysis_prior_net(nn.Module):
     def forward(self, x):    
         x = torch.abs(x)
         x = self.relu1(self.conv1(x))
+        h, w = x.shape[-2:]
+        pad_list = [(0, w%2, 0, h%2)]
+        x = F.pad(x, (0, w%2, 0, h%2))
         x = self.relu2(self.conv2(x))
-        return self.conv3(x)
+        h, w = x.shape[-2:]
+        pad_list.append((0, w%2, 0, h%2))
+        # print("shape after conv operation: ", self.conv3(x).size())
+        return self.conv3(x), pad_list
 
 
 def build_model():

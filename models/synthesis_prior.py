@@ -33,9 +33,13 @@ class Synthesis_prior_net(nn.Module):
         #     nn.ConvTranspose2d(out_channel_N, out_channel_M, 3, stride=1, padding=1)
         # )
 
-    def forward(self, x):
+    def forward(self, x, pad_list):
         x = self.relu1(self.deconv1(x))
+        if pad_list[1] != (0,0,0,0):
+            x = x[:, :, :x.size(2)-pad_list[1][3], :x.size(3)-pad_list[1][1]]
         x = self.relu2(self.deconv2(x))
+        if pad_list[0] != (0,0,0,0):
+            x = x[:, :, :x.size(2)-pad_list[0][3], :x.size(3)-pad_list[0][1]]
         return torch.exp(self.deconv3(x))
 
 
