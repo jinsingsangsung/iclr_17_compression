@@ -38,7 +38,7 @@ def load_model(model, f):
 class ImageCompressor(nn.Module):
     def __init__(self, out_channel_N=128, use_ssm=False):
         super(ImageCompressor, self).__init__()
-        self.Encoder = Analysis_net_17(out_channel_N=out_channel_N)
+        self.Encoder = Analysis_net_17(out_channel_N=out_channel_N, use_ssm=use_ssm)
         self.Decoder = Synthesis_net_17(out_channel_N=out_channel_N)
         self.bitEstimator = BitEstimator(channel=out_channel_N)
         self.out_channel_N = out_channel_N
