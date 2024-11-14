@@ -80,3 +80,63 @@ class ImageCompressor(nn.Module):
         bpp_feature = total_bits_feature / (batch_size * im_shape[2] * im_shape[3])
 
         return clipped_recon_image, mse_loss, bpp_feature
+
+class ImageCompressor2(nn.Module):
+    def __init__(self, out_channel_M = 320, use_ssm=False):
+        super(ImageCompressor2, self).__init__()
+        self.Encoder = nn.ModuleList([
+            Analysis_net(use_ssm=use_ssm),
+            Analysis_prior_net()
+        ])
+        self.Decoder = nn.ModuleList([
+            Synthesis_prior_net(),
+            Synthesis_net()
+        ])
+        self.bitEstimator = BitEstimator(channel=out_channel_M)
+        self.out_channel_M = out_channel_M
+
+    def forward(self, input_image, w_pad=0, h_pad=0):
+        w, h = input_image.shape[-2:]
+        quant_noise_feature = torch.zeros(input_image.size(0), self.out_channel_M, input_image.size(2) // 16, input_image.size(3) // 16).cuda()
+        quant_noise_feature = torch.nn.init.uniform_(torch.zeros_like(quant_noise_feature), -0.5, 0.5)
+        feature = self.Encoder[0](input_image)
+        z = self.Encoder[1](feature)
+        batch_size = feature.size()[0]
+
+        compressed_z = torch.round(z)
+        recon_sigma = self.Decoder[0](compressed_z)
+        feature_renorm = feature / recon_sigma
+
+        if self.training:
+            compressed_feature_renorm = feature_renorm + quant_noise_feature
+        else:
+            compressed_feature_renorm = torch.round(feature_renorm)
+        
+        compressed_feature_denorm = compressed_feature_renorm * recon_sigma
+        
+        recon_image = self.Decoder[1](compressed_feature_renorm)
+        # recon_image = prediction + recon_res
+        clipped_recon_image = recon_image.clamp(0., 1.)
+        clipped_recon_image = clipped_recon_image[:, :, w_pad//2:w_pad//2+w, h_pad//2:h_pad//2+h]
+        clipped_input_image = input_image[:, :, w_pad//2:w_pad//2+w, h_pad//2:h_pad//2+h]
+        # distortion
+        mse_loss = torch.mean((clipped_recon_image - clipped_input_image).pow(2))
+
+        # def feature_probs_based_sigma(feature, sigma):
+        #     mu = torch.zeros_like(sigma)
+        #     sigma = sigma.clamp(1e-10, 1e10)
+        #     gaussian = torch.distributions.laplace.Laplace(mu, sigma)
+        #     probs = gaussian.cdf(feature + 0.5) - gaussian.cdf(feature - 0.5)
+        #     total_bits = torch.sum(torch.clamp(-1.0 * torch.log(probs + 1e-10) / math.log(2.0), 0, 50))
+        #     return total_bits, probs
+
+        def iclr18_estimate_bits_z(z):
+            prob = self.bitEstimator(z + 0.5) - self.bitEstimator(z - 0.5)
+            total_bits = torch.sum(torch.clamp(-1.0 * torch.log(prob + 1e-10) / math.log(2.0), 0, 50))
+            return total_bits, prob
+
+        total_bits_feature, _ = iclr18_estimate_bits_z(compressed_feature_renorm)
+        im_shape = input_image.size()
+        bpp_feature = total_bits_feature / (batch_size * im_shape[2] * im_shape[3])
+
+        return clipped_recon_image, mse_loss, bpp_feature

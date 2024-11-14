@@ -21,7 +21,7 @@ class Analysis_prior_net(nn.Module):
         torch.nn.init.xavier_normal_(self.conv3.weight.data, math.sqrt(2))
         torch.nn.init.constant_(self.conv3.bias.data, 0.01)
 
-    def forward(self, x):
+    def forward(self, x):    
         x = torch.abs(x)
         x = self.relu1(self.conv1(x))
         x = self.relu2(self.conv2(x))
